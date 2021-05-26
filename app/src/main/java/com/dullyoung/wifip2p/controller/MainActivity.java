@@ -6,9 +6,13 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.net.NetworkCapabilities;
+import android.net.NetworkInfo;
+import android.net.wifi.WifiManager;
 import android.net.wifi.p2p.WifiP2pConfig;
 import android.net.wifi.p2p.WifiP2pDevice;
 import android.net.wifi.p2p.WifiP2pDeviceList;
+import android.net.wifi.p2p.WifiP2pInfo;
 import android.net.wifi.p2p.WifiP2pManager;
 import android.os.Bundle;
 import android.util.Log;
@@ -33,6 +37,10 @@ import com.google.zxing.integration.android.IntentResult;
 
 import org.jetbrains.annotations.NotNull;
 
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -118,6 +126,24 @@ public class MainActivity extends BaseActivity {
         });
     }
 
+    private void startService() {
+        new Thread() {
+            @Override
+            public void run() {
+                try {
+                    ServerSocket serverSocket = new ServerSocket(8000);
+                    Log.i(TAG, "startService: " + JSONObject.toJSONString(serverSocket));
+                    serverSocket.accept();
+                    runOnUiThread(() -> {
+                        Toast.makeText(MainActivity.this, "链接建立完成", Toast.LENGTH_SHORT).show();
+                    });
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+            }
+        }.start();
+    }
+
     private void initWifiP2p() {
         wifiP2pManager = (WifiP2pManager) getSystemService(Context.WIFI_P2P_SERVICE);
         channel = wifiP2pManager.initialize(this, getMainLooper(), () -> {
@@ -146,6 +172,26 @@ public class MainActivity extends BaseActivity {
         unregisterReceiver(mWifip2pReceiver);
     }
 
+    private void connectService(WifiP2pInfo info) {
+        new Thread() {
+            @Override
+            public void run() {
+                try {
+                    Socket socket = new Socket(info.groupOwnerAddress, 8000);
+                    if (socket.isConnected()) {
+                        Log.i(TAG, "sockect 已连接" + info.groupOwnerAddress + ":8000");
+                    } else {
+                        Log.i(TAG, "run:  connectService" + info.groupOwnerAddress + ":8000");
+                        socket.connect(new InetSocketAddress(info.groupOwnerAddress, 8000), 0);
+                    }
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+            }
+        }.start();
+        ;
+    }
+
 
     private class Wifip2pReceiver extends BroadcastReceiver {
 
@@ -168,6 +214,7 @@ public class MainActivity extends BaseActivity {
                 int state = intent.getIntExtra(WifiP2pManager.EXTRA_WIFI_STATE, -1);
                 if (state == WifiP2pManager.WIFI_P2P_STATE_ENABLED) {
                     Log.i(TAG, "onReceive:  Wifi P2P is enabled");
+                    startConnect();
                 } else {
                     Log.i(TAG, "onReceive: Wi-Fi P2P is not enabled");
                 }
@@ -175,19 +222,44 @@ public class MainActivity extends BaseActivity {
                 if (mManager != null) {
                     mManager.requestPeers(channel, peers -> {
                         List<WifiP2pDevice> devices = new ArrayList<>(peers.getDeviceList());
+
                         mItemAdapter.setNewInstance(devices);
                         Log.i(TAG, "onPeersAvailable: " + JSONObject.toJSONString(peers.getDeviceList()));
                     });
                 }
             } else if (WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION.equals(action)) {
                 // Respond to new connection or disconnections
-                Log.i(TAG, "onReceive: WIFI_P2P_CONNECTION_CHANGED_ACTION");
+                NetworkInfo networkInfo = (NetworkInfo) intent
+                        .getParcelableExtra(WifiP2pManager.EXTRA_NETWORK_INFO);
+                if (networkInfo.isConnected()) {
+                    startConnect();
+                }
+                Log.i(TAG, "onReceive: WIFI_P2P_CONNECTION_CHANGED_ACTION" + JSONObject.toJSONString(networkInfo));
             } else if (WifiP2pManager.WIFI_P2P_THIS_DEVICE_CHANGED_ACTION.equals(action)) {
-                Log.i(TAG, "onReceive: WIFI_P2P_THIS_DEVICE_CHANGED_ACTION ");
+                WifiP2pDevice wifiP2pDevice = intent.getParcelableExtra(
+                        WifiP2pManager.EXTRA_WIFI_P2P_DEVICE);
+                Log.i(TAG, "onReceive: WIFI_P2P_THIS_DEVICE_CHANGED_ACTION " + JSONObject.toJSONString(wifiP2pDevice));
+                ;
                 // Respond to this device's wifi state changing
             }
         }
 
+    }
+
+    private void startConnect() {
+        wifiP2pManager.requestConnectionInfo(channel, new WifiP2pManager.ConnectionInfoListener() {
+            @Override
+            public void onConnectionInfoAvailable(WifiP2pInfo info) {
+                Log.i(TAG, "onConnectionInfoAvailable: " + info);
+                if (info.groupFormed && info.isGroupOwner) {
+                    startService();
+                } else {
+                    if (info.groupFormed) {
+                        connectService(info);
+                    }
+                }
+            }
+        });
     }
 
 
